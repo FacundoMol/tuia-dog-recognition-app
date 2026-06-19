@@ -9,6 +9,10 @@ from uuid import uuid4
 import cv2
 import numpy as np
 
+import torch
+from torchvision import models, transforms
+from PIL import Image
+
 from lib.schemas import EmbeddingRecord, Neighbor, SearchResult
 from lib.storage.base import EmbeddingStoreProtocol
 
@@ -45,6 +49,13 @@ class SimilarityService:
         self.model_name = model_name
         self.url_resolver = url_resolver
 
+        self.preprocess = transforms.Compose([transforms.Resize(256),transforms.CenterCrop(self.image_size),
+            transforms.ToTensor(),transforms.Normalize(mean=[0.485, 0.456, 0.406],std=[0.229, 0.224, 0.225])])
+        base_model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V2)
+        self.model = torch.nn.Sequential(*list(base_model.children())[:-1])
+        self.model = self.model.to(self.device)
+        self.model.eval()
+
     def _load_image(self, source_path: str) -> np.ndarray:
         image = cv2.imread(str(source_path))
         if image is None:
@@ -68,6 +79,22 @@ class SimilarityService:
           - Recordar que la imagen llega en BGR (OpenCV).
         Retorna una lista de floats de dimension EMBEDDING_DIM.
         """
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        
+        pil_img = Image.fromarray(image_rgb)
+        
+        tensor_img = self.preprocess(pil_img).unsqueeze(0).to(self.device)
+        
+        with torch.no_grad():
+            output = self.model(tensor_img)
+            
+            embedding_tensor = torch.flatten(output).cpu()
+            
+            embedding_list = embedding_tensor.numpy().tolist()
+            
+        return embedding_list
+
+
         raise NotImplementedError("Etapa 1: implementar extract_embedding")
 
     def search_similar_images(self, embedding: list[float], top_k: int) -> list[Neighbor]:
