@@ -103,7 +103,7 @@ class SimilarityService:
         return embedding_list
 
     
-    def populate_vector_db(self, image_records: list[dict], batch_size: int = 32):
+    def poblar_vector_db(self, image_records: list[dict], batch_size: int = 32):
     
         """Puebla la base de datos de pgvector, con batching de 32: id_imagen, embedding, path, breed y metadata"""
 
