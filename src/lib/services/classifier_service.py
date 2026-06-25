@@ -135,10 +135,38 @@ class ClassifierService:
         # instanciar modelo
         if self.active_model_name == "resnet18_finetuned":
             model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-            num_ftrs = model.fc.in_features
-            model.fc = nn.Linear(num_ftrs, num_classes)
+            num_ftrs = model.fc.in_features             #512 caracteristicas de la penultima capa
+            model.fc = nn.Linear(num_ftrs, num_classes)     #remplazar la capa final 
+
+
         elif self.active_model_name == "cnn_custom":
-            raise NotImplementedError("Falta importar CNN Custom aca")
+
+            def _conv_block(in_ch: int, out_ch: int):
+                return nn.Sequential(
+                    nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1),
+                    nn.BatchNorm2d(out_ch),
+                    nn.ReLU(inplace=True),
+                    nn.MaxPool2d(2),
+                )
+
+            embedding_dim = 512
+            model = nn.Sequential(
+                _conv_block(3, 32),
+                _conv_block(32, 64),
+                _conv_block(64, 128),
+                _conv_block(128, 256),
+                _conv_block(256, 256),
+                nn.AdaptiveAvgPool2d(1),
+                nn.Flatten(),
+                nn.Linear(256, embedding_dim),
+                nn.BatchNorm1d(embedding_dim),
+                nn.ReLU(inplace=True),
+                nn.Dropout(0.3),
+                nn.Linear(embedding_dim, num_classes),  # capa de clasificacio
+            )
+
+
+
         else:
             raise ValueError(f"Modelo no soportado: {self.active_model_name}")
 
@@ -297,5 +325,43 @@ class ClassifierService:
         La imagen llega en BGR (OpenCV). Retorna una lista de floats de
         dimension EMBEDDING_DIM.
         """
+        import cv2
+        from torchvision import transforms
 
-        raise NotImplementedError("Etapa 2: implementar extract_custom_embedding")
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        model = self.load_model()
+
+        if not isinstance(model, torch.nn.Module):
+            raise ValueError(
+                "Error "
+                f"(torch.nn.Module). El modelo activo '{self.active_model_name}' "
+                f"es de tipo {type(model)} (ej. .onnx)."
+            )
+
+        model = model.to(device)
+        model.eval()
+
+        # OpenCV entrega BGR, los modelos se entrenaron con imagenes RGB
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+
+        preprocess = transforms.Compose(
+            [
+                transforms.ToPILImage(),
+                transforms.Resize(256),
+                transforms.CenterCrop(self.image_size),
+                transforms.ToTensor(),
+                transforms.Normalize(
+                    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
+                ),
+            ]
+        )
+        tensor = preprocess(image_rgb).unsqueeze(0).to(device)
+
+        with torch.no_grad():
+
+            feature_extractor = torch.nn.Sequential(*list(model.children())[:-1])
+            features = feature_extractor(tensor)
+            embedding = torch.flatten(features, 1)
+
+        embedding_np = embedding.squeeze(0).detach().cpu().numpy().astype(float)
+        return embedding_np.tolist()
