@@ -229,8 +229,12 @@ class SimilarityService:
             score = self.similarity(embedding, ref_embedding)   
             neighbor = Neighbor(path=path,breed=breed,score=score)
             neighbors.append(neighbor)
-            
-        neighbors.sort(key=lambda x: x.score, reverse=True)
+
+        if self.similarity_metric == 'cosine':
+            neighbors.sort(key=lambda x: x.score, reverse=True)
+        else:
+            neighbors.sort(key=lambda x: x.score, reverse=False) 
+        
         
         return neighbors
 
@@ -248,16 +252,26 @@ class SimilarityService:
             return "unknown", 0.0
 
         best_score = results[0].score
-
         threshold = getattr(self, "similarity_threshold", 0.0)
-        
-        if best_score < threshold:
-            return "unknown", float(best_score)
+        is_cosine = (getattr(self, "similarity_metric", "cosine") == "cosine")
+
+        if is_cosine:
+            if best_score < threshold:
+                return "unknown", float(best_score)
+        else:
+            if best_score > threshold:
+                return "unknown", float(best_score)
 
         breed_votes = defaultdict(float)
         
         for neighbor in results:
-            breed_votes[neighbor.breed] += neighbor.score
+            if is_cosine:
+                weight = neighbor.score
+            else:
+                weight = 1.0 / (neighbor.score + 1e-5)
+                
+            breed_votes[neighbor.breed] += weight
+
 
         predicted_breed = max(breed_votes, key=breed_votes.get)
 
