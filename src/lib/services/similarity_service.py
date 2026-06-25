@@ -58,8 +58,15 @@ class SimilarityService:
 
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        self.preprocess = transforms.Compose([transforms.Resize((256, 256)),transforms.CenterCrop(self.image_size),
-            transforms.ToTensor(),transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])])
+        self.preprocess = transforms.Compose([
+            transforms.Resize((256, 256)),
+            transforms.CenterCrop(self.image_size),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406], 
+                std=[0.229, 0.224, 0.225]
+            )
+        ])
         
         self.base_model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V2)
         self.model = torch.nn.Sequential(*list(self.base_model.children())[:-1])
