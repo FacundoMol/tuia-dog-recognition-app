@@ -219,22 +219,22 @@ class SimilarityService:
         neighbors = []
         
         for item in raw_results:
-            path = getattr(item, 'path', item.get('path') if isinstance(item, dict) else item[1])
-            breed = getattr(item, 'breed', item.get('breed') if isinstance(item, dict) else item[2])
-            ref_embedding = getattr(item, 'embedding', item.get('embedding') if isinstance(item, dict) else item[4])
+            path = getattr(item, 'path', None) or (item.get('path') if isinstance(item, dict) else None)
+            breed = getattr(item, 'breed', None) or (item.get('breed') if isinstance(item, dict) else None)
+            ref_embedding = getattr(item, 'embedding', None) or (item.get('embedding') if isinstance(item, dict) else None)
 
             if hasattr(ref_embedding, 'tolist'):
                 ref_embedding = ref_embedding.tolist()
 
             score = self.similarity(embedding, ref_embedding)   
-            neighbor = Neighbor(path=path,breed=breed,score=score)
+            
+            neighbor = Neighbor(path=path, breed=breed, score=score)
             neighbors.append(neighbor)
-
-        if self.similarity_metric == 'cosine':
+            
+        if getattr(self, "similarity_metric", "cosine") == 'cosine':
             neighbors.sort(key=lambda x: x.score, reverse=True)
         else:
-            neighbors.sort(key=lambda x: x.score, reverse=False) 
-        
+            neighbors.sort(key=lambda x: x.score, reverse=False)
         
         return neighbors
 
