@@ -56,11 +56,13 @@ class SimilarityService:
         self.model_name = model_name
         self.url_resolver = url_resolver
 
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
         self.preprocess = transforms.Compose([(transforms.Resize((256),transforms.CenterCrop(self.image_size),
-            transforms.ToTensor(),transforms.Normalize(mean=[0.485, 0.456, 0.406],std=[0.229, 0.224, 0.225])])
+        transforms.ToTensor(),transforms.Normalize(mean=[0.485, 0.456, 0.406],std=[0.229, 0.224, 0.225])])
         
         self.base_model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V2)
-        self.model = torch.nn.Sequential(*list(base_model.children())[:-1])
+        self.model = torch.nn.Sequential(*list(self.base_model.children())[:-1])
         self.model = self.model.to(self.device)
         self.model.eval()
 
