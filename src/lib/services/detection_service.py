@@ -58,6 +58,10 @@ class DetectionService:
         # BGR uint8 (convencion OpenCV / ultralytics)
         return image
 
+
+
+
+
     # ------------------------------------------------------------------
     # Etapa 3: funciones a implementar
     # ------------------------------------------------------------------
@@ -75,7 +79,37 @@ class DetectionService:
 
         Retorna una lista de ((x1, y1, x2, y2), confidence) en pixeles.
         """
-        raise NotImplementedError("Etapa 3: implementar detect_dogs")
+        from ultralytics import YOLO
+
+        # Cacheamos el modelo en la instancia para no recargarlo de disco en cada llamada
+        if not hasattr(self, "_yolo_model"):
+            self._yolo_model = YOLO(self.yolo_model_name)
+        
+        # Hacemos la inferencia filtrando directamente por nuestro umbral de confianza
+        results = self._yolo_model(image, conf=self.conf_threshold)
+        
+        detections = []
+        # iteramos sobre las cajas delimitadoras de la imagen
+        for box in results[0].boxes:
+            class_id = int(box.cls[0].item())
+            
+            # Filtramos estrictamente por la clase perr
+            if class_id == self.dog_class_id:
+                # Extraemos y convertimos coordenadas a enteros
+                x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
+                # Extraemos confianza
+                conf = float(box.conf[0].item())
+                
+                # Respetamos el output esperado por la orquestación: ((x1, y1, x2, y2), score)
+                detections.append(((x1, y1, x2, y2), conf))
+                
+        return detections
+    
+
+
+
+
+
 
     def classify_detected_dog(self, crop: np.ndarray) -> tuple[str, float]:
         """
@@ -84,7 +118,64 @@ class DetectionService:
 
         El recorte llega en BGR (OpenCV). Retorna (raza, score).
         """
-        raise NotImplementedError("Etapa 3: implementar classify_detected_dog")
+        import cv2
+        import torch
+        import torch.nn.functional as F
+        from torchvision import transforms
+        from PIL import Image
+
+        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+        
+        #la imagen de yolo llega en bgr la convertimos a rgb y luego a PIL para poder aplicar las transformaciones
+        img_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(img_rgb)
+
+        # Usamos self.classifier.image_size dinámico para las transformaciones
+        transform = transforms.Compose([
+            transforms.Resize(256),
+            transforms.CenterCrop(self.classifier.image_size),
+            transforms.ToTensor(),
+            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+        ])
+        
+        img_t = transform(pil_img).unsqueeze(0).to(device)
+
+        # Inferencia, carga y preparación del modelo mediante el ClassifierService
+        model = self.classifier.load_model()
+        
+        if not isinstance(model, torch.nn.Module):
+             raise ValueError("error")
+             
+        model = model.to(device)
+        model.eval()
+
+        with torch.no_grad():
+            outputs = model(img_t)
+            # Pasamos los logits a probabilidades (0 a 1) mediante Softmax
+            probs = F.softmax(outputs, dim=1)
+            # Extraemos el valor máximo de score y su posición índice predicho
+            conf, pred_idx = torch.max(probs, 1)
+
+        pred_class_idx = int(pred_idx.item())
+        confidence = float(conf.item())
+
+        # Traducción segura de Índice a Raza
+        # PyTorch clasifica alfabéticamente leyendo los directorios de 'train'
+        if hasattr(self.classifier, "class_names") and self.classifier.class_names:
+            class_names = self.classifier.class_names
+        else:
+            train_dir = self.classifier.dataset_path / 'train'
+            class_names = sorted([d.name for d in train_dir.iterdir() if d.is_dir()])
+
+        breed_name = class_names[pred_class_idx]
+
+        # Respetamos el output esperado por classify_image y predict: (raza, score)
+        return breed_name, confidence
+
+
+
+
+
 
     # ------------------------------------------------------------------
     # Orquestacion provista

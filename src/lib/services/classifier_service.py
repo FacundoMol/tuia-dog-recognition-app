@@ -174,7 +174,7 @@ class ClassifierService:
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-        num_epochs = 5
+        num_epochs = 10
 
         self.history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
         
@@ -308,60 +308,3 @@ class ClassifierService:
         }
     
 
-
-
-
-
-
-
-
-    def extract_custom_embedding(self, image: np.ndarray) -> list[float]:
-        """
-        Genera el embedding de una imagen usando el modelo propio activo
-        (penultima capa del ResNet18 fine-tuned o de la CNN custom).
-
-        Se usa cuando EMBEDDING_MODEL != baseline para que la busqueda por
-        similitud (Etapa 1) funcione con los modelos entrenados.
-        La imagen llega en BGR (OpenCV). Retorna una lista de floats de
-        dimension EMBEDDING_DIM.
-        """
-        import cv2
-        from torchvision import transforms
-
-        device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        model = self.load_model()
-
-        if not isinstance(model, torch.nn.Module):
-            raise ValueError(
-                "Error "
-                f"(torch.nn.Module). El modelo activo '{self.active_model_name}' "
-                f"es de tipo {type(model)} (ej. .onnx)."
-            )
-
-        model = model.to(device)
-        model.eval()
-
-        # OpenCV entrega BGR, los modelos se entrenaron con imagenes RGB
-        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-
-        preprocess = transforms.Compose(
-            [
-                transforms.ToPILImage(),
-                transforms.Resize(256),
-                transforms.CenterCrop(self.image_size),
-                transforms.ToTensor(),
-                transforms.Normalize(
-                    mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225]
-                ),
-            ]
-        )
-        tensor = preprocess(image_rgb).unsqueeze(0).to(device)
-
-        with torch.no_grad():
-
-            feature_extractor = torch.nn.Sequential(*list(model.children())[:-1])
-            features = feature_extractor(tensor)
-            embedding = torch.flatten(features, 1)
-
-        embedding_np = embedding.squeeze(0).detach().cpu().numpy().astype(float)
-        return embedding_np.tolist()
