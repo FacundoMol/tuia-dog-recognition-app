@@ -4,7 +4,7 @@ import json
 import logging
 from pathlib import Path
 from uuid import uuid4
-
+from ultralytics import YOLO
 import cv2
 import numpy as np
 
@@ -36,6 +36,7 @@ class DetectionService:
         self.yolo_model_name = yolo_model
         self.conf_threshold = conf_threshold
         self.dog_class_id = dog_class_id
+        self.model = YOLO(self.yolo_model_name)
 
     @staticmethod
     def _clip_xyxy(
@@ -75,7 +76,19 @@ class DetectionService:
 
         Retorna una lista de ((x1, y1, x2, y2), confidence) en pixeles.
         """
-        raise NotImplementedError("Etapa 3: implementar detect_dogs")
+        detected_dogs = []
+        height, width = image.shape[:2]
+
+        results = self.model(image, conf=self.conf_threshold, classes=[self.dog_class_id], verbose=False)
+        
+        for result in results:
+            for box in result.boxes:
+                x1_raw, y1_raw, x2_raw, y2_raw = map(int, box.xyxy[0].tolist())
+                x1, y1, x2, y2 = self._clip_xyxy(x1_raw, y1_raw, x2_raw, y2_raw, height, width)
+                confidence = float(box.conf[0].item())
+                detected_dogs.append(((x1, y1, x2, y2), confidence))
+                
+        return detected_dogs
 
     def classify_detected_dog(self, crop: np.ndarray) -> tuple[str, float]:
         """
@@ -84,7 +97,7 @@ class DetectionService:
 
         El recorte llega en BGR (OpenCV). Retorna (raza, score).
         """
-        raise NotImplementedError("Etapa 3: implementar classify_detected_dog")
+        
 
     # ------------------------------------------------------------------
     # Orquestacion provista
