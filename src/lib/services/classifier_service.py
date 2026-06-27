@@ -3,7 +3,17 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 from typing import Any
-
+import torch.nn as nn
+import torch.optim as optim
+from torchvision import datasets, transforms, models
+from torch.utils.data import DataLoader
+import os 
+import torch
+import numpy as np
+from torchvision import datasets, transforms
+from torch.utils.data import DataLoader
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
+import os
 import numpy as np
 import torch
 import onnxruntime
@@ -96,16 +106,10 @@ class ClassifierService:
           - Guardar el checkpoint resultante en self.active_checkpoint
             (ej: models/resnet18_finetuned.pth).
         """
-        import torch
-        import torch.nn as nn
-        import torch.optim as optim
-        from torchvision import datasets, transforms, models
-        from torch.utils.data import DataLoader
-        import os   
+      
         
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Transformaciones en train y val
         train_transforms = transforms.Compose([
             transforms.RandomResizedCrop(self.image_size),
             transforms.RandomHorizontalFlip(),
@@ -151,17 +155,17 @@ class ClassifierService:
 
             embedding_dim = 512
             model = nn.Sequential(
-                _conv_block(3, 32),
-                _conv_block(32, 64),
-                _conv_block(64, 128),
-                _conv_block(128, 256),
-                _conv_block(256, 256),
+                _conv_block(3, 32, pool=True),
+                _conv_block(32, 64, pool=True),
+                _conv_block(64, 128, pool=False),
+                _conv_block(128, 256, pool=True),
+                _conv_block(256, 256, pool=True),
                 nn.AdaptiveAvgPool2d(1),
                 nn.Flatten(),
                 nn.Linear(256, embedding_dim),
                 nn.BatchNorm1d(embedding_dim),
                 nn.ReLU(inplace=True),
-                nn.Dropout(0.3),
+                nn.Dropout(0.4),
                 nn.Linear(embedding_dim, num_classes),  # capa de clasificacio
             )
 
@@ -172,9 +176,9 @@ class ClassifierService:
 
         model = model.to(device)
         criterion = nn.CrossEntropyLoss()
-        optimizer = optim.Adam(model.parameters(), lr=0.001)
+        optimizer = optim.Adam(model.parameters(), lr=0.004)
 
-        num_epochs = 10
+        num_epochs = 30
 
         self.history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
         
@@ -248,16 +252,9 @@ class ClassifierService:
           {"accuracy": 0.91, "precision": 0.90, "recall": 0.89,
            "specificity": 0.99, "f1": 0.90}
         """
-        import torch
-        import numpy as np
-        from torchvision import datasets, transforms
-        from torch.utils.data import DataLoader
-        from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score, confusion_matrix
-        import os
-
+   
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        
-        #cargar datos test
+
         test_dir = os.path.join(self.dataset_path, 'test')
         test_transforms = transforms.Compose([
             transforms.Resize(256),

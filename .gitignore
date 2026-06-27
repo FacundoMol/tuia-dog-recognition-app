@@ -1,5 +1,6 @@
 .env
 .venv/
+tp2cv/
 __pycache__/
 *.pyc
 .pytest_cache/
