@@ -17,6 +17,7 @@ import os
 import numpy as np
 import torch
 import onnxruntime
+import copy 
 
 logger = logging.getLogger(__name__)
 
@@ -106,7 +107,6 @@ class ClassifierService:
           - Guardar el checkpoint resultante en self.active_checkpoint
             (ej: models/resnet18_finetuned.pth).
         """
-      
         
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
@@ -136,24 +136,23 @@ class ClassifierService:
         self.class_names = train_dataset.classes
         num_classes = len(self.class_names)
 
-        # instanciar modelo
         if self.active_model_name == "resnet18_finetuned":
             model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-            num_ftrs = model.fc.in_features             #512 caracteristicas de la penultima capa
-            model.fc = nn.Linear(num_ftrs, num_classes)     #remplazar la capa final 
-
+            num_ftrs = model.fc.in_features
+            model.fc = nn.Linear(num_ftrs, num_classes)
 
         elif self.active_model_name == "cnn_custom":
-
-            def _conv_block(in_ch: int, out_ch: int):
-                return nn.Sequential(
+            def _conv_block(in_ch: int, out_ch: int, pool: bool = True):
+                layers = [
                     nn.Conv2d(in_ch, out_ch, kernel_size=3, padding=1),
                     nn.BatchNorm2d(out_ch),
                     nn.ReLU(inplace=True),
-                    nn.MaxPool2d(2),
-                )
+                ]
+                if pool:
+                    layers.append(nn.MaxPool2d(2))
+                return nn.Sequential(*layers)
 
-            embedding_dim = 512
+            embedding_dim = 256 
             model = nn.Sequential(
                 _conv_block(3, 32, pool=True),
                 _conv_block(32, 64, pool=True),
@@ -166,25 +165,26 @@ class ClassifierService:
                 nn.BatchNorm1d(embedding_dim),
                 nn.ReLU(inplace=True),
                 nn.Dropout(0.4),
-                nn.Linear(embedding_dim, num_classes),  # capa de clasificacio
+                nn.Linear(embedding_dim, num_classes),
             )
-
-
 
         else:
             raise ValueError(f"Modelo no soportado: {self.active_model_name}")
 
         model = model.to(device)
         criterion = nn.CrossEntropyLoss()
-        optimizer = optim.Adam(model.parameters(), lr=0.004)
+        
+        optimizer = optim.Adam(model.parameters(), lr=0.0005)
 
         num_epochs = 30
-
         self.history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
-        
-        #loop entrenamiento validacion
+
+        patience = 5
+        patience_counter = 0
+        best_val_loss = float('inf')
+        best_model_weights = None
+
         for epoch in range(num_epochs):
-            #fase entrenamiento
             model.train()
             running_loss = 0.0
             corrects = 0
@@ -205,7 +205,6 @@ class ClassifierService:
             epoch_loss = running_loss / len(train_dataset)
             epoch_acc = corrects.double() / len(train_dataset)
 
-            # fase validacion
             model.eval()
             val_running_loss = 0.0
             val_corrects = 0
@@ -224,11 +223,27 @@ class ClassifierService:
 
             print(f'Epoch {epoch+1}/{num_epochs} | Train Loss: {epoch_loss:.4f} Acc: {epoch_acc:.4f} | Val Loss: {val_epoch_loss:.4f} Acc: {val_epoch_acc:.4f}')
             
-            # Guardamos todo en el history
             self.history['train_loss'].append(epoch_loss)
             self.history['train_acc'].append(epoch_acc.item())
             self.history['val_loss'].append(val_epoch_loss)
             self.history['val_acc'].append(val_epoch_acc.item())
+
+            if val_epoch_loss < best_val_loss:
+                best_val_loss = val_epoch_loss
+                patience_counter = 0 
+                best_model_weights = copy.deepcopy(model.state_dict())
+            else:
+                patience_counter += 1
+                print(f"Early Stopping: {patience_counter} de {patience} épocas sin mejoras.")
+
+            if patience_counter >= patience:
+                print(f"Early Stopping en la época {epoch+1}!")
+                break  
+
+
+        if best_model_weights is not None:
+            print("Cargar los mejores pesos encontrados")
+            model.load_state_dict(best_model_weights)
 
         os.makedirs(self.active_checkpoint.parent, exist_ok=True)
         torch.save(model, self.active_checkpoint)
