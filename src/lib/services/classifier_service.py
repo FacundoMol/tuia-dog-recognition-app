@@ -174,7 +174,7 @@ class ClassifierService:
         criterion = nn.CrossEntropyLoss()
         optimizer = optim.Adam(model.parameters(), lr=0.001)
 
-        num_epochs = 10
+        num_epochs = 30
 
         self.history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
         

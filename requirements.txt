@@ -92,3 +92,4 @@ uvloop==0.22.1; sys_platform != 'win32'
 watchfiles==1.1.1
 wcwidth==0.6.0
 websockets==16.0
+psycopg2-binary

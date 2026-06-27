@@ -9,6 +9,17 @@ from uuid import uuid4
 import cv2
 import numpy as np
 
+import torch
+from torchvision import models, transforms
+from PIL import Image
+from collections import defaultdict
+
+import os
+import psycopg2
+from pgvector.psycopg2 import register_vector
+from uuid import uuid4
+from psycopg2.extras import execute_values
+
 from lib.schemas import EmbeddingRecord, Neighbor, SearchResult
 from lib.storage.base import EmbeddingStoreProtocol
 
@@ -45,6 +56,23 @@ class SimilarityService:
         self.model_name = model_name
         self.url_resolver = url_resolver
 
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+        self.preprocess = transforms.Compose([
+            transforms.Resize((256, 256)),
+            transforms.CenterCrop(self.image_size),
+            transforms.ToTensor(),
+            transforms.Normalize(
+                mean=[0.485, 0.456, 0.406], 
+                std=[0.229, 0.224, 0.225]
+            )
+        ])
+        
+        self.base_model = models.resnet50(weights=models.ResNet50_Weights.IMAGENET1K_V2)
+        self.model = torch.nn.Sequential(*list(self.base_model.children())[:-1])
+        self.model = self.model.to(self.device)
+        self.model.eval()
+
     def _load_image(self, source_path: str) -> np.ndarray:
         image = cv2.imread(str(source_path))
         if image is None:
@@ -68,7 +96,109 @@ class SimilarityService:
           - Recordar que la imagen llega en BGR (OpenCV).
         Retorna una lista de floats de dimension EMBEDDING_DIM.
         """
-        raise NotImplementedError("Etapa 1: implementar extract_embedding")
+        image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+        pil_img = Image.fromarray(image_rgb)
+        tensor_img = self.preprocess(pil_img).unsqueeze(0).to(self.device)
+
+        with torch.no_grad():
+            output = self.model(tensor_img)
+            embedding_tensor = torch.flatten(output).cpu()
+            embedding_list = embedding_tensor.numpy().tolist()
+
+        return embedding_list
+
+    
+    def poblar_vector_db(self, image_records: list[dict], batch_size: int = 32):
+    
+        """Puebla la base de datos de pgvector, con batching de 32: id_imagen, embedding, path, breed y metadata"""
+
+        conn = psycopg2.connect(host=getattr(self, "db_host", "localhost"), 
+            database=getattr(self, "db_name", "tu_base_datos"),
+            user=getattr(self, "db_user", "postgres"),
+            password=getattr(self, "db_password", "password"),
+            port=getattr(self, "db_port", 5432))
+
+        cursor = conn.cursor()
+        register_vector(conn)
+
+        cursor.execute("CREATE EXTENSION IF NOT EXISTS vector;")
+        cursor.execute("""CREATE TABLE IF NOT EXISTS dog_embeddings(
+                id_imagen TEXT PRIMARY KEY, -- str (UUID)
+                path TEXT NOT NULL UNIQUE, -- str
+                breed TEXT NOT NULL, -- str
+                metadata JSONB NOT NULL, -- dict
+                embedding vector(2048) -- list[float]);""")
+        conn.commit()
+        
+        print(f"carga de {len(image_records)} registros vectoriales")
+
+        for i in range(0, len(image_records), batch_size):
+            sub_list = image_records[i : i + batch_size]
+            
+            valid_tensors = []
+            valid_metadata = []
+
+            for record in sub_list:
+                path = record['path']
+                breed = record['breed']
+                meta_dict = record.get('metadata', {})
+
+                if not os.path.exists(path):
+                    continue
+
+                image = cv2.imread(path)
+                if image is None:
+                    continue
+
+                image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
+                pil_img = Image.fromarray(image_rgb)
+                
+                tensor_img = self.preprocess(pil_img)
+                
+                valid_tensors.append(tensor_img)
+                valid_metadata.append((path, breed, meta_dict))
+
+            if not valid_tensors:
+                continue
+
+            try:
+                batch_tensor = torch.stack(valid_tensors).to(self.device)
+                
+                with torch.no_grad():
+                    outputs = self.model(batch_tensor)
+                    if len(outputs.shape) > 2:
+                        outputs = torch.flatten(outputs, start_dim=1)
+                    
+                    embeddings_numpy = outputs.cpu().numpy()
+
+
+                insert_data = []
+                for idx, (path, breed, meta_dict) in enumerate(valid_metadata):
+                    emb_list = embeddings_numpy[idx].tolist()
+                    
+                    id_imagen = str(uuid4())
+
+                    meta_json = json.dumps(meta_dict)
+
+                    insert_data.append((id_imagen, path, breed, meta_json, emb_list))
+
+                query = """INSERT INTO dog_embeddings (id_imagen, path, breed, metadata, embedding) 
+                    VALUES %s
+                    ON CONFLICT (path) 
+                    DO UPDATE SET embedding = EXCLUDED.embedding,breed = EXCLUDED.breed,metadata = EXCLUDED.metadata;"""
+                execute_values(cursor, query, insert_data)
+                conn.commit()
+
+                print(f"Lote procesado {min(i + batch_size, len(image_records))}/{len(image_records)}")
+
+            except Exception as e:
+                print(f"Error al procesar el lote, índice {i}: {str(e)}")
+                conn.rollback()
+                continue
+
+            cursor.close()
+            conn.close()
+            print("Base de datos generada")
 
     def search_similar_images(self, embedding: list[float], top_k: int) -> list[Neighbor]:
         """
@@ -81,7 +211,28 @@ class SimilarityService:
         Retorna una lista de Neighbor (path, breed, score) ordenada por score
         descendente.
         """
-        raise NotImplementedError("Etapa 1: implementar search_similar_images")
+        # INTERCEPCIÓN: Convertimos la lista a un array float32 de NumPy
+        embedding_numpy = np.array(embedding, dtype=np.float32)
+        
+        # Se lo pasamos al store que antes fallaba
+        raw_results = self.store.search(embedding_numpy, top_k)
+        neighbors = []
+
+        for item in raw_results:
+            path = getattr(item, 'path', item.get('path') if isinstance(item, dict) else item[1])
+            breed = getattr(item, 'breed', item.get('breed') if isinstance(item, dict) else item[2])
+            ref_embedding = getattr(item, 'embedding', item.get('embedding') if isinstance(item, dict) else item[4])
+
+            if hasattr(ref_embedding, 'tolist'):
+                ref_embedding = ref_embedding.tolist()
+
+            score = self.similarity(embedding, ref_embedding)
+            neighbor = Neighbor(path=path, breed=breed, score=score)
+            neighbors.append(neighbor)
+
+        neighbors.sort(key=lambda x: x.score, reverse=True)
+        return neighbors
+
 
     def predict_breed_from_neighbors(self, results: list[Neighbor]) -> tuple[str, float]:
         """
@@ -91,7 +242,35 @@ class SimilarityService:
         Si el mejor score esta por debajo de self.similarity_threshold se
         considera "unknown". Retorna (raza, score).
         """
-        raise NotImplementedError("Etapa 1: implementar predict_breed_from_neighbors")
+
+        if not results:
+            return "unknown", 0.0
+
+        best_score = results[0].score
+        threshold = getattr(self, "similarity_threshold", 0.0)
+        is_cosine = (getattr(self, "similarity_metric", "cosine") == "cosine")
+
+        if is_cosine:
+            if best_score < threshold:
+                return "unknown", float(best_score)
+        else:
+            if best_score > threshold:
+                return "unknown", float(best_score)
+
+        breed_votes = defaultdict(float)
+        
+        for neighbor in results:
+            if is_cosine:
+                weight = neighbor.score
+            else:
+                weight = 1.0 / (neighbor.score + 1e-5)
+                
+            breed_votes[neighbor.breed] += weight
+
+
+        predicted_breed = max(breed_votes, key=breed_votes.get)
+
+        return predicted_breed, float(best_score)
 
     # ------------------------------------------------------------------
     # Helpers de similitud provistos
