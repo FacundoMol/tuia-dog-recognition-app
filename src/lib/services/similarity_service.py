@@ -200,6 +200,7 @@ class SimilarityService:
             conn.close()
             print("Base de datos generada")
 
+            
     def search_similar_images(self, embedding: list[float], top_k: int) -> list[Neighbor]:
         """
         Recupera de la base vectorial las top_k imagenes mas similares.
@@ -211,25 +212,31 @@ class SimilarityService:
         Retorna una lista de Neighbor (path, breed, score) ordenada por score
         descendente.
         """
-        # INTERCEPCIÓN: Convertimos la lista a un array float32 de NumPy
-        embedding_numpy = np.array(embedding, dtype=np.float32)
+        print(f"[DEBUG] Store tiene {len(list(self.store.all()))} registros") 
+        try:
+            raw_results = self.store.search(embedding, top_k)
+        except Exception:
+            embedding_numpy = np.array(embedding, dtype=np.float32)
+            raw_results = self.store.search(embedding_numpy, top_k)
         
-        # Se lo pasamos al store que antes fallaba
-        raw_results = self.store.search(embedding_numpy, top_k)
+        if not raw_results:
+            return []
+        
         neighbors = []
-
         for item in raw_results:
-            path = getattr(item, 'path', item.get('path') if isinstance(item, dict) else item[1])
-            breed = getattr(item, 'breed', item.get('breed') if isinstance(item, dict) else item[2])
-            ref_embedding = getattr(item, 'embedding', item.get('embedding') if isinstance(item, dict) else item[4])
-
-            if hasattr(ref_embedding, 'tolist'):
-                ref_embedding = ref_embedding.tolist()
-
-            score = self.similarity(embedding, ref_embedding)
-            neighbor = Neighbor(path=path, breed=breed, score=score)
-            neighbors.append(neighbor)
-
+            # Acceso defensivo según tipo del item
+            if isinstance(item, dict):
+                path = item['path']
+                breed = item['breed']
+                ref_emb = item.get('embedding', [])
+            else:
+                path = getattr(item, 'path', '')
+                breed = getattr(item, 'breed', '')
+                ref_emb = getattr(item, 'embedding', [])
+            
+            score = self.similarity(embedding, ref_emb) if ref_emb else 0.0
+            neighbors.append(Neighbor(path=path, breed=breed, score=score))
+        
         neighbors.sort(key=lambda x: x.score, reverse=True)
         return neighbors
 
