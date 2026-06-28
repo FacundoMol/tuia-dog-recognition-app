@@ -130,7 +130,6 @@ class DetectionService:
         img_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(img_rgb)
 
-        # Usamos self.classifier.image_size dinámico para las transformaciones
         transform = transforms.Compose([
             transforms.Resize(256),
             transforms.CenterCrop(self.classifier.image_size),
@@ -140,7 +139,7 @@ class DetectionService:
         
         img_t = transform(pil_img).unsqueeze(0).to(device)
 
-        # Inferencia, carga y preparación del modelo mediante el ClassifierService
+        # Inferencia, carga y preparación del modelo con ClassifierService
         model = self.classifier.load_model()
         
         if not isinstance(model, torch.nn.Module):
@@ -151,16 +150,15 @@ class DetectionService:
 
         with torch.no_grad():
             outputs = model(img_t)
-            # Pasamos los logits a probabilidades (0 a 1) mediante Softmax
+            #pasamos los logits a probabilidades (0 a 1) con Softmax
             probs = F.softmax(outputs, dim=1)
-            # Extraemos el valor máximo de score y su posición índice predicho
+            #extraemos el valor máximo de score y su posicion índice predicho
             conf, pred_idx = torch.max(probs, 1)
 
         pred_class_idx = int(pred_idx.item())
         confidence = float(conf.item())
 
-        # Traducción segura de Índice a Raza
-        # PyTorch clasifica alfabéticamente leyendo los directorios de 'train'
+        #traduccion de indice a Raza
         if hasattr(self.classifier, "class_names") and self.classifier.class_names:
             class_names = self.classifier.class_names
         else:
@@ -169,7 +167,6 @@ class DetectionService:
 
         breed_name = class_names[pred_class_idx]
 
-        # Respetamos el output esperado por classify_image y predict: (raza, score)
         return breed_name, confidence
 
 
