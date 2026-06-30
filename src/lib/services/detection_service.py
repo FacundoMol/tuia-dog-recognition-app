@@ -81,32 +81,25 @@ class DetectionService:
         """
         from ultralytics import YOLO
 
-        # Cacheamos el modelo en la instancia para no recargarlo de disco en cada llamada
+        
         if not hasattr(self, "_yolo_model"):
             self._yolo_model = YOLO(self.yolo_model_name)
         
-        # Hacemos la inferencia filtrando directamente por nuestro umbral de confianza
         results = self._yolo_model(image, conf=self.conf_threshold)
         
         detections = []
-        # iteramos sobre las cajas delimitadoras de la imagen
+
         for box in results[0].boxes:
             class_id = int(box.cls[0].item())
-            
-            # Filtramos estrictamente por la clase perr
+
             if class_id == self.dog_class_id:
-                # Extraemos y convertimos coordenadas a enteros
                 x1, y1, x2, y2 = map(int, box.xyxy[0].tolist())
-                # Extraemos confianza
                 conf = float(box.conf[0].item())
-                
-                # Respetamos el output esperado por la orquestación: ((x1, y1, x2, y2), score)
+
                 detections.append(((x1, y1, x2, y2), conf))
                 
         return detections
     
-
-
 
 
 
@@ -126,7 +119,6 @@ class DetectionService:
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-        #la imagen de yolo llega en bgr la convertimos a rgb y luego a PIL para poder aplicar las transformaciones
         img_rgb = cv2.cvtColor(crop, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(img_rgb)
 
@@ -139,7 +131,6 @@ class DetectionService:
         
         img_t = transform(pil_img).unsqueeze(0).to(device)
 
-        # Inferencia, carga y preparación del modelo con ClassifierService
         model = self.classifier.load_model()
         
         if not isinstance(model, torch.nn.Module):
@@ -150,15 +141,12 @@ class DetectionService:
 
         with torch.no_grad():
             outputs = model(img_t)
-            #pasamos los logits a probabilidades (0 a 1) con Softmax
             probs = F.softmax(outputs, dim=1)
-            #extraemos el valor máximo de score y su posicion índice predicho
             conf, pred_idx = torch.max(probs, 1)
 
         pred_class_idx = int(pred_idx.item())
         confidence = float(conf.item())
 
-        #traduccion de indice a Raza
         if hasattr(self.classifier, "class_names") and self.classifier.class_names:
             class_names = self.classifier.class_names
         else:

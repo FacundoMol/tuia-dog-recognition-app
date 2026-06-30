@@ -59,7 +59,7 @@ class SimilarityService:
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
         self.preprocess = transforms.Compose([
-            transforms.Resize((256, 256)),
+            transforms.Resize(256),
             transforms.CenterCrop(self.image_size),
             transforms.ToTensor(),
             transforms.Normalize(

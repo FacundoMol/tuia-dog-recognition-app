@@ -91,28 +91,41 @@ class ClassifierService:
         Modelo B (opcional, recomendado): CNN propia.
 
         Debe:
-          - Usar los splits train/valid definidos en la notebook.
-          - Aplicar el preprocesamiento y data augmentation justificados.
-          - Guardar el checkpoint resultante en self.active_checkpoint
+        - Usar los splits train/valid definidos en la notebook.
+        - Aplicar el preprocesamiento y data augmentation justificados.
+        - Guardar el checkpoint resultante en self.active_checkpoint
             (ej: models/resnet18_finetuned.pth).
         """
+        import copy
         import torch
         import torch.nn as nn
         import torch.optim as optim
         from torchvision import datasets, transforms, models
         from torch.utils.data import DataLoader
-        import os   
-        
+        import os
+
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
-        # Transformaciones en train y val
-        train_transforms = transforms.Compose([
-            transforms.RandomResizedCrop(self.image_size),
-            transforms.RandomHorizontalFlip(),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
-        ])
-        
+
+        if self.active_model_name == "cnn_custom":
+
+            train_transforms = transforms.Compose([
+                transforms.RandomResizedCrop(self.image_size),
+                transforms.RandomHorizontalFlip(),
+                transforms.RandomRotation(15),
+                transforms.ColorJitter(brightness=0.2, contrast=0.2, saturation=0.2),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            ])
+        else:
+
+            train_transforms = transforms.Compose([
+                transforms.RandomResizedCrop(self.image_size),
+                transforms.RandomHorizontalFlip(),
+                transforms.ToTensor(),
+                transforms.Normalize(mean=[0.485, 0.456, 0.406], std=[0.229, 0.224, 0.225])
+            ])
+
         val_transforms = transforms.Compose([
             transforms.Resize(256),
             transforms.CenterCrop(self.image_size),
@@ -122,22 +135,32 @@ class ClassifierService:
 
         train_dir = os.path.join(self.dataset_path, 'train')
         val_dir = os.path.join(self.dataset_path, 'valid')
-        
+
         train_dataset = datasets.ImageFolder(train_dir, transform=train_transforms)
         val_dataset = datasets.ImageFolder(val_dir, transform=val_transforms)
-        
+
         train_loader = DataLoader(train_dataset, batch_size=32, shuffle=True, num_workers=2)
         val_loader = DataLoader(val_dataset, batch_size=32, shuffle=False, num_workers=2)
 
         self.class_names = train_dataset.classes
         num_classes = len(self.class_names)
 
-        # instanciar modelo
+
         if self.active_model_name == "resnet18_finetuned":
             model = models.resnet18(weights=models.ResNet18_Weights.DEFAULT)
-            num_ftrs = model.fc.in_features             #512 caracteristicas de la penultima capa
-            model.fc = nn.Linear(num_ftrs, num_classes)     #remplazar la capa final 
+            num_ftrs = model.fc.in_features
+            model.fc = nn.Linear(num_ftrs, num_classes)
 
+            for name, param in model.named_parameters():
+                if "layer4" not in name and "fc" not in name:
+                    param.requires_grad = False
+
+            # LR diferenciado: backbone bajo para no destruir pesos pre-entrenados,
+            # head alto para aprender rápido la clasificación nueva.
+            optimizer = optim.Adam([
+                {"params": model.layer4.parameters(), "lr": 1e-4},
+                {"params": model.fc.parameters(),     "lr": 1e-3},
+            ])
 
         elif self.active_model_name == "cnn_custom":
 
@@ -162,25 +185,34 @@ class ClassifierService:
                 nn.BatchNorm1d(embedding_dim),
                 nn.ReLU(inplace=True),
                 nn.Dropout(0.3),
-                nn.Linear(embedding_dim, num_classes),  # capa de clasificacio
+                nn.Linear(embedding_dim, num_classes),
             )
 
-
+            # LR uniforme: todos los parámetros parten desde cero,
+            # no hay distinción de backbone/head.
+            optimizer = optim.Adam(model.parameters(), lr=0.001)
 
         else:
             raise ValueError(f"Modelo no soportado: {self.active_model_name}")
 
         model = model.to(device)
         criterion = nn.CrossEntropyLoss()
-        optimizer = optim.Adam(model.parameters(), lr=0.001)
+
+
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=3, factor=0.5, verbose=True)
 
         num_epochs = 30
 
         self.history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
-        
-        #loop entrenamiento validacion
+
+        best_val_acc = 0.0
+        best_model_state = None
+
+
+        early_stopping_patience = 7 if self.active_model_name == "cnn_custom" else num_epochs
+        epochs_sin_mejora = 0
+
         for epoch in range(num_epochs):
-            #fase entrenamiento
             model.train()
             running_loss = 0.0
             corrects = 0
@@ -201,11 +233,10 @@ class ClassifierService:
             epoch_loss = running_loss / len(train_dataset)
             epoch_acc = corrects.double() / len(train_dataset)
 
-            # fase validacion
             model.eval()
             val_running_loss = 0.0
             val_corrects = 0
-            
+
             with torch.no_grad():
                 for inputs, labels in val_loader:
                     inputs, labels = inputs.to(device), labels.to(device)
@@ -214,22 +245,37 @@ class ClassifierService:
                     _, preds = torch.max(outputs, 1)
                     val_running_loss += loss.item() * inputs.size(0)
                     val_corrects += torch.sum(preds == labels.data)
-                    
+
             val_epoch_loss = val_running_loss / len(val_dataset)
             val_epoch_acc = val_corrects.double() / len(val_dataset)
 
+            scheduler.step(val_epoch_loss)
+
+
+            if val_epoch_acc > best_val_acc:
+                best_val_acc = val_epoch_acc
+                best_model_state = copy.deepcopy(model.state_dict())
+                epochs_sin_mejora = 0
+            else:
+                epochs_sin_mejora += 1
+                if epochs_sin_mejora >= early_stopping_patience:
+                    print(f"Early stopping en epoch {epoch+1} (sin mejora en {early_stopping_patience} épocas)")
+                    break
+
             print(f'Epoch {epoch+1}/{num_epochs} | Train Loss: {epoch_loss:.4f} Acc: {epoch_acc:.4f} | Val Loss: {val_epoch_loss:.4f} Acc: {val_epoch_acc:.4f}')
-            
-            # Guardamos todo en el history
+
             self.history['train_loss'].append(epoch_loss)
             self.history['train_acc'].append(epoch_acc.item())
             self.history['val_loss'].append(val_epoch_loss)
             self.history['val_acc'].append(val_epoch_acc.item())
 
+
+        if best_model_state is not None:
+            model.load_state_dict(best_model_state)
+
         os.makedirs(self.active_checkpoint.parent, exist_ok=True)
         torch.save(model, self.active_checkpoint)
-        print(f"Checkpoint guardado en: {self.active_checkpoint}")
-
+        print(f"Checkpoint guardado en: {self.active_checkpoint} (mejor val_acc: {best_val_acc:.4f})")
 
 
 
@@ -257,7 +303,6 @@ class ClassifierService:
 
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         
-        #cargar datos test
         test_dir = os.path.join(self.dataset_path, 'test')
         test_transforms = transforms.Compose([
             transforms.Resize(256),
