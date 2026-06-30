@@ -96,13 +96,17 @@ class SimilarityService:
           - Recordar que la imagen llega en BGR (OpenCV).
         Retorna una lista de floats de dimension EMBEDDING_DIM.
         """
+   
         image_rgb = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
         pil_img = Image.fromarray(image_rgb)
         tensor_img = self.preprocess(pil_img).unsqueeze(0).to(self.device)
 
         with torch.no_grad():
-            output = self.model(tensor_img)
-            embedding_tensor = torch.flatten(output).cpu()
+            output = self.model(tensor_img)              
+            embedding_tensor = torch.flatten(output)    
+            embedding_tensor = embedding_tensor.view(1, 1, -1)    
+            embedding_tensor = torch.nn.functional.avg_pool1d(embedding_tensor, kernel_size=4, stride=4)
+            embedding_tensor = embedding_tensor.view(-1).cpu()  
             embedding_list = embedding_tensor.numpy().tolist()
 
         return embedding_list
@@ -111,27 +115,25 @@ class SimilarityService:
     def search_similar_images(self, embedding: list[float], top_k: int) -> list[Neighbor]:
         """
         Recupera de la base vectorial las top_k imagenes mas similares.
-
         Sugerencias:
-          - Con pgvector: self.store.search(embedding, top_k).
-          - Con JSON: iterar self.store.all() y usar self.similarity(...).
-          - Respetar SIMILARITY_METRIC (cosine | l2).
+        - Con pgvector: self.store.search(embedding, top_k).
+        - Con JSON: iterar self.store.all() y usar self.similarity(...).
+        - Respetar SIMILARITY_METRIC (cosine | l2).
         Retorna una lista de Neighbor (path, breed, score) ordenada por score
         descendente.
         """
-        print(f"[DEBUG] Store tiene {len(list(self.store.all()))} registros") 
+
+        embedding_numpy = np.array(embedding, dtype=np.float32)
         try:
-            raw_results = self.store.search(embedding, top_k)
-        except Exception:
-            embedding_numpy = np.array(embedding, dtype=np.float32)
             raw_results = self.store.search(embedding_numpy, top_k)
-        
+        except Exception:
+            raw_results = self.store.search(embedding, top_k)
+
         if not raw_results:
             return []
-        
+
         neighbors = []
         for item in raw_results:
-            # Acceso defensivo según tipo del item
             if isinstance(item, dict):
                 path = item['path']
                 breed = item['breed']
@@ -140,10 +142,10 @@ class SimilarityService:
                 path = getattr(item, 'path', '')
                 breed = getattr(item, 'breed', '')
                 ref_emb = getattr(item, 'embedding', [])
-            
+
             score = self.similarity(embedding, ref_emb) if ref_emb else 0.0
             neighbors.append(Neighbor(path=path, breed=breed, score=score))
-        
+
         neighbors.sort(key=lambda x: x.score, reverse=True)
         return neighbors
 
@@ -167,9 +169,9 @@ class SimilarityService:
         if is_cosine:
             if best_score < threshold:
                 return "unknown", float(best_score)
-        else:
-            if best_score > threshold:
-                return "unknown", float(best_score)
+            else:
+                if best_score < threshold: 
+                    return "unknown", float(best_score)
 
         breed_votes = defaultdict(float)
         
