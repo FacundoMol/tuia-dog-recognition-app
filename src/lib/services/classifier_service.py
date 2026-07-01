@@ -199,17 +199,19 @@ class ClassifierService:
         criterion = nn.CrossEntropyLoss()
 
 
-        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=3, factor=0.5, verbose=True)
+        scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=3, factor=0.5)
 
-        num_epochs = 30
+        if self.active_model_name == "cnn_custom":
+            num_epochs = 50
+            early_stopping_patience = 10  
+        else:
+            num_epochs = 30
+            early_stopping_patience = num_epochs 
 
         self.history = {'train_loss': [], 'train_acc': [], 'val_loss': [], 'val_acc': []}
 
         best_val_acc = 0.0
         best_model_state = None
-
-
-        early_stopping_patience = 7 if self.active_model_name == "cnn_custom" else num_epochs
         epochs_sin_mejora = 0
 
         for epoch in range(num_epochs):
