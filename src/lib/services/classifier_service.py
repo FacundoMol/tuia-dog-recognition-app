@@ -188,8 +188,6 @@ class ClassifierService:
                 nn.Linear(embedding_dim, num_classes),
             )
 
-            # LR uniforme: todos los parámetros parten desde cero,
-            # no hay distinción de backbone/head.
             optimizer = optim.Adam(model.parameters(), lr=0.001)
 
         else:
@@ -202,7 +200,7 @@ class ClassifierService:
         scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', patience=3, factor=0.5)
 
         if self.active_model_name == "cnn_custom":
-            num_epochs = 50
+            num_epochs = 75
             early_stopping_patience = 10  
         else:
             num_epochs = 30
